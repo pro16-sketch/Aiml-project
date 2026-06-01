@@ -25,7 +25,7 @@ echo ================================
 echo Starting Vehicle Detection Server
 echo ================================
 echo.
-echo Server is running at: http://localhost:5000
+echo Server is running at: http://localhost:5001
 echo Press Ctrl+C to stop the server
 echo.
 python app.py
