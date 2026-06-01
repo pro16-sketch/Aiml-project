@@ -1,0 +1,29 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+
+# VS Code
+.vscode/
+
+# Model and large outputs
+yolov8n.pt
+outputs/
+temp_outputs/
+uploads/
+
+# Logs and exports
+*.log
+*.csv
+
+# OS files
+.DS_Store
+Thumbs.db
