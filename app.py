@@ -45,7 +45,7 @@ def get_available_videos():
             if video.is_file() and video.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv']:
                 videos.append({
                     'name': video.name,
-                    'path': str(video),
+                    'path': video.as_posix(),
                     'size': video.stat().st_size,
                     'source': 'uploaded'
                 })
@@ -55,7 +55,7 @@ def get_available_videos():
         if video.is_file():
             videos.append({
                 'name': video.name,
-                'path': str(video),
+                'path': video.as_posix(),
                 'size': video.stat().st_size,
                 'source': 'local'
             })
@@ -125,7 +125,7 @@ def upload_video():
     return jsonify({
         'success': True,
         'filename': filename,
-        'path': str(filepath)
+        'path': filepath.as_posix()
     })
 
 @app.route('/api/output-files/<job_id>', methods=['GET'])

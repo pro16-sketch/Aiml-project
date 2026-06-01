@@ -36,6 +36,19 @@ function setupEventListeners() {
 
     // Process button
     document.getElementById('processBtn').addEventListener('click', startProcessing);
+
+    // Video list item selection using event delegation
+    const videoList = document.getElementById('videoList');
+    if (videoList) {
+        videoList.addEventListener('click', (e) => {
+            const item = e.target.closest('.video-item');
+            if (item) {
+                const path = item.getAttribute('data-path');
+                const name = item.getAttribute('data-name');
+                selectVideo(path, name);
+            }
+        });
+    }
 }
 
 // Tab switching
@@ -65,7 +78,7 @@ async function loadAvailableVideos() {
         }
         
         videoList.innerHTML = videos.map(video => `
-            <div class="video-item" onclick="selectVideo('${video.path}', '${video.name}')" data-path="${video.path}">
+            <div class="video-item" data-path="${video.path}" data-name="${video.name}">
                 <i class="fas fa-film"></i>
                 <div class="name">${video.name}</div>
                 <div class="size">${formatFileSize(video.size)}</div>
@@ -84,7 +97,14 @@ function selectVideo(path, name) {
     
     // Update UI
     document.querySelectorAll('.video-item').forEach(item => item.classList.remove('selected'));
-    document.querySelector(`[data-path="${path}"]`).classList.add('selected');
+    
+    // Find the item robustly without querySelector parsing errors
+    const selectedItem = Array.from(document.querySelectorAll('.video-item')).find(
+        item => item.getAttribute('data-path') === path
+    );
+    if (selectedItem) {
+        selectedItem.classList.add('selected');
+    }
     
     // Update selected video info
     document.getElementById('selectedVideoInfo').innerHTML = `
