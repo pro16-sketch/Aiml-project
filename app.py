@@ -276,4 +276,5 @@ def process_vehicle_detection(job_id, video_path, session_id):
         processing_status[job_id]['message'] = f"Exception: {str(e)}"
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    port = int(os.environ.get('PORT', 5001))
+    app.run(debug=True, host='0.0.0.0', port=port)

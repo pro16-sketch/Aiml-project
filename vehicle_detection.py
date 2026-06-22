@@ -5,13 +5,17 @@ from datetime import datetime
 import csv
 import time
 import ctypes
+import os
 
 try:
     import winsound
 except ImportError:
     winsound = None
 
-MCI = ctypes.windll.winmm.mciSendStringA
+try:
+    MCI = ctypes.windll.winmm.mciSendStringA
+except AttributeError:
+    MCI = None
 
 
 def load_model_with_recovery(weights_path: str) -> YOLO:
@@ -116,6 +120,8 @@ def priority_decision(actions: list[str]) -> str:
 
 
 def play_mp3_once(sound_path: Path):
+    if MCI is None:
+        return
     # Use native Windows MCI so mp3 playback works without extra packages.
     path_bytes = str(sound_path).encode("utf-8")
     MCI(b'close copilot_alert', None, 0, None)
@@ -437,7 +443,13 @@ with output_log_path.open("w", newline="", encoding="utf-8") as log_file:
             )
 
         writer.write(annotated_frame)
-        cv2.imshow("Vehicle Automation Dashboard", annotated_frame)
+        if os.environ.get('DISPLAY') or os.name == 'nt':
+            try:
+                cv2.imshow("Vehicle Automation Dashboard", annotated_frame)
+                if cv2.waitKey(1) == 27:
+                    break
+            except Exception:
+                pass
 
         prev_gray = gray
         prev_objects = []
@@ -445,12 +457,13 @@ with output_log_path.open("w", newline="", encoding="utf-8") as log_file:
             obj["idx"] = i
             prev_objects.append(obj)
 
-        if cv2.waitKey(1) == 27:
-            break
-
 cap.release()
 writer.release()
-cv2.destroyAllWindows()
+if os.environ.get('DISPLAY') or os.name == 'nt':
+    try:
+        cv2.destroyAllWindows()
+    except Exception:
+        pass
 
 print(f"Saved output video: {output_video_path}")
 print(f"Saved detection log: {output_log_path}")
