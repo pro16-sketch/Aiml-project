@@ -221,15 +221,17 @@ def process_vehicle_detection(job_id, video_path, session_id):
         processing_status[job_id]['progress'] = 25
         
         # Start the detection process asynchronously
+        # We redirect stderr to stdout (stderr=subprocess.STDOUT) to avoid potential OS pipe buffer deadlocks
         process = subprocess.Popen(
             [sys.executable, temp_script],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             bufsize=1
         )
         
         saved_files = []
+        output_log = []
         
         # Read stdout line-by-line in real-time
         while True:
@@ -237,6 +239,7 @@ def process_vehicle_detection(job_id, video_path, session_id):
             if not line and process.poll() is not None:
                 break
             if line:
+                output_log.append(line)
                 line_str = line.strip()
                 if line_str.startswith("PROGRESS_UPDATE:"):
                     # Format: PROGRESS_UPDATE:pct:frame:total
@@ -269,14 +272,14 @@ def process_vehicle_detection(job_id, video_path, session_id):
                             'type': 'csv'
                         })
 
-        # Wait for the process to complete and capture any stderr
-        stderr_output = process.stderr.read()
+        # Wait for the process to complete and close stdout stream
         process.stdout.close()
-        process.stderr.close()
+        process.wait()
         
         if process.returncode != 0:
+            error_details = "".join(output_log[-15:])  # Show last 15 lines of output log for error context
             processing_status[job_id]['status'] = 'error'
-            processing_status[job_id]['message'] = f"Error (Exit code {process.returncode}): {stderr_output}"
+            processing_status[job_id]['message'] = f"Error (Exit code {process.returncode}):\n{error_details}"
         else:
             processing_status[job_id]['output_files'] = saved_files
             
