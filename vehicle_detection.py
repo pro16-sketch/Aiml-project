@@ -184,6 +184,8 @@ frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 video_fps = cap.get(cv2.CAP_PROP_FPS)
 video_fps = video_fps if video_fps and video_fps > 1 else 30.0
+total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+total_frames = total_frames if total_frames > 0 else 1
 
 outputs_dir = Path("outputs")
 outputs_dir.mkdir(exist_ok=True)
@@ -443,6 +445,11 @@ with output_log_path.open("w", newline="", encoding="utf-8") as log_file:
             )
 
         writer.write(annotated_frame)
+        
+        # Print progress for backend tracking
+        if frame_id % 10 == 0 or frame_id == total_frames:
+            progress_pct = min(99.0, (frame_id / total_frames) * 100.0)
+            print(f"PROGRESS_UPDATE:{progress_pct:.1f}:{frame_id}:{total_frames}", flush=True)
         if os.environ.get('DISPLAY') or os.name == 'nt':
             try:
                 cv2.imshow("Vehicle Automation Dashboard", annotated_frame)

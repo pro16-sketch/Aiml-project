@@ -220,42 +220,64 @@ def process_vehicle_detection(job_id, video_path, session_id):
         processing_status[job_id]['message'] = 'Processing video with vehicle detection...'
         processing_status[job_id]['progress'] = 25
         
-        # Run the detection
-        result = subprocess.run(
+        # Start the detection process asynchronously
+        process = subprocess.Popen(
             [sys.executable, temp_script],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=3600
+            bufsize=1
         )
         
-        if result.returncode != 0:
-            processing_status[job_id]['status'] = 'error'
-            processing_status[job_id]['message'] = f"Error: {result.stderr}"
-        else:
-            # Parse output to find saved files
-            output_text = result.stdout + result.stderr
-            saved_files = []
-            
-            for line in output_text.split('\n'):
-                if 'Saved output video:' in line:
-                    # Extract file path from "Saved output video: path/to/file.mp4"
-                    file_path = line.split('Saved output video:')[1].strip()
+        saved_files = []
+        
+        # Read stdout line-by-line in real-time
+        while True:
+            line = process.stdout.readline()
+            if not line and process.poll() is not None:
+                break
+            if line:
+                line_str = line.strip()
+                if line_str.startswith("PROGRESS_UPDATE:"):
+                    # Format: PROGRESS_UPDATE:pct:frame:total
+                    parts = line_str.split(':')
+                    if len(parts) >= 4:
+                        try:
+                            pct = float(parts[1])
+                            frame_idx = int(parts[2])
+                            total_f = int(parts[3])
+                            # Map 0-100% of script to 25-95% of web app progress
+                            mapped_progress = int(25 + (pct * 0.7))
+                            processing_status[job_id]['progress'] = mapped_progress
+                            processing_status[job_id]['message'] = f"Processing video... {pct:.1f}% (Frame {frame_idx}/{total_f})"
+                        except ValueError:
+                            pass
+                elif 'Saved output video:' in line_str:
+                    file_path = line_str.split('Saved output video:')[1].strip()
                     if Path(file_path).exists():
                         saved_files.append({
                             'name': Path(file_path).name,
                             'path': file_path,
                             'type': 'video'
                         })
-                elif 'Saved detection log:' in line:
-                    # Extract file path from "Saved detection log: path/to/file.csv"
-                    file_path = line.split('Saved detection log:')[1].strip()
+                elif 'Saved detection log:' in line_str:
+                    file_path = line_str.split('Saved detection log:')[1].strip()
                     if Path(file_path).exists():
                         saved_files.append({
                             'name': Path(file_path).name,
                             'path': file_path,
                             'type': 'csv'
                         })
-            
+
+        # Wait for the process to complete and capture any stderr
+        stderr_output = process.stderr.read()
+        process.stdout.close()
+        process.stderr.close()
+        
+        if process.returncode != 0:
+            processing_status[job_id]['status'] = 'error'
+            processing_status[job_id]['message'] = f"Error (Exit code {process.returncode}): {stderr_output}"
+        else:
             processing_status[job_id]['output_files'] = saved_files
             
             # Create summary message
