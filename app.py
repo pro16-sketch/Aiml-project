@@ -241,7 +241,20 @@ def process_vehicle_detection(job_id, video_path, session_id):
             if line:
                 output_log.append(line)
                 line_str = line.strip()
-                if line_str.startswith("PROGRESS_UPDATE:"):
+                
+                # Print to server console for deployment logging/debugging
+                print(f"[Subprocess Output] {line_str}", flush=True)
+                
+                if line_str == "INIT_START":
+                    processing_status[job_id]['progress'] = 5
+                    processing_status[job_id]['message'] = "Initializing script and importing packages..."
+                elif line_str == "INIT_MODEL_LOADED":
+                    processing_status[job_id]['progress'] = 15
+                    processing_status[job_id]['message'] = "YOLOv8 model loaded successfully. Opening video..."
+                elif line_str == "INIT_VIDEO_OPENED":
+                    processing_status[job_id]['progress'] = 25
+                    processing_status[job_id]['message'] = "Video opened. Beginning vehicle detection..."
+                elif line_str.startswith("PROGRESS_UPDATE:"):
                     # Format: PROGRESS_UPDATE:pct:frame:total
                     parts = line_str.split(':')
                     if len(parts) >= 4:

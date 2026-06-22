@@ -1,3 +1,4 @@
+print("INIT_START", flush=True)
 from ultralytics import YOLO
 import cv2
 from pathlib import Path
@@ -174,6 +175,7 @@ def draw_dashboard(frame, fps: float, decision: str, counts: dict[str, int], nea
 
 # Load YOLO model (auto-downloads if not present)
 model = load_model_with_recovery("yolov8n.pt")
+print("INIT_MODEL_LOADED", flush=True)
 
 # Use webcam (0) OR replace with another path.
 cap = cv2.VideoCapture("road.mp4")
@@ -186,6 +188,7 @@ video_fps = cap.get(cv2.CAP_PROP_FPS)
 video_fps = video_fps if video_fps and video_fps > 1 else 30.0
 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 total_frames = total_frames if total_frames > 0 else 1
+print("INIT_VIDEO_OPENED", flush=True)
 
 outputs_dir = Path("outputs")
 outputs_dir.mkdir(exist_ok=True)
@@ -447,7 +450,7 @@ with output_log_path.open("w", newline="", encoding="utf-8") as log_file:
         writer.write(annotated_frame)
         
         # Print progress for backend tracking
-        if frame_id % 10 == 0 or frame_id == total_frames:
+        if frame_id == 1 or frame_id % 10 == 0 or frame_id == total_frames:
             progress_pct = min(99.0, (frame_id / total_frames) * 100.0)
             print(f"PROGRESS_UPDATE:{progress_pct:.1f}:{frame_id}:{total_frames}", flush=True)
         if os.environ.get('DISPLAY') or os.name == 'nt':
