@@ -10,6 +10,17 @@ import shutil
 import secrets
 
 app = Flask(__name__)
+
+# Pre-load YOLO model globally to optimize memory usage (crucial for Render's 512MB limit)
+yolo_model = None
+try:
+    print("Pre-loading YOLO model...", flush=True)
+    from vehicle_detection import load_model_with_recovery
+    yolo_model = load_model_with_recovery("yolov8n.pt")
+    print("YOLO model pre-loaded successfully.", flush=True)
+except Exception as e:
+    print(f"Error pre-loading YOLO model: {e}", flush=True)
+
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2GB max file upload
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['TEMP_OUTPUT_FOLDER'] = 'temp_outputs'
@@ -184,7 +195,8 @@ def cleanup_session():
 def process_vehicle_detection(job_id, video_path, session_id):
     """Run vehicle detection on video"""
     try:
-        processing_status[job_id]['message'] = 'Modifying vehicle detection script...'
+        processing_status[job_id]['message'] = 'Initializing vehicle detection...'
+        processing_status[job_id]['progress'] = 5
         processing_status[job_id]['output_files'] = []
         
         # Get session temp folder
@@ -194,122 +206,55 @@ def process_vehicle_detection(job_id, video_path, session_id):
             temp_folder.mkdir(exist_ok=True)
             session_temp_folders[session_id] = temp_folder
         
-        # Read original script
-        with open('vehicle_detection.py', 'r') as f:
-            script = f.read()
+        # Progress callback function to update Flask job status
+        def progress_callback(pct, frame_idx, total_f):
+            mapped_progress = int(5 + (pct * 0.9)) # Map 0-100% of detection to 5-95% of web app progress
+            processing_status[job_id]['progress'] = mapped_progress
+            processing_status[job_id]['message'] = f"Processing video... {pct:.1f}% (Frame {frame_idx}/{total_f})"
+            print(f"[Job {job_id}] Progress: {pct:.1f}% ({frame_idx}/{total_f})", flush=True)
         
-        # Replace video source and outputs folder with temp folder
-        # Convert paths to use forward slashes to avoid escape sequence issues
-        video_path_safe = video_path.replace('\\', '/')
-        temp_folder_safe = str(temp_folder).replace('\\', '/')
+        processing_status[job_id]['message'] = 'Running vehicle detection...'
+        processing_status[job_id]['progress'] = 10
         
-        modified_script = script.replace(
-            'cap = cv2.VideoCapture("road.mp4")',
-            f'cap = cv2.VideoCapture("{video_path_safe}")'
-        )
-        modified_script = modified_script.replace(
-            'outputs_dir = Path("outputs")',
-            f'outputs_dir = Path("{temp_folder_safe}")'
-        )
+        from vehicle_detection import run_vehicle_detection
         
-        # Write to temp script
-        temp_script = f'temp_detect_{job_id}.py'
-        with open(temp_script, 'w') as f:
-            f.write(modified_script)
-        
-        processing_status[job_id]['message'] = 'Processing video with vehicle detection...'
-        processing_status[job_id]['progress'] = 25
-        
-        # Start the detection process asynchronously
-        # We redirect stderr to stdout (stderr=subprocess.STDOUT) to avoid potential OS pipe buffer deadlocks
-        process = subprocess.Popen(
-            [sys.executable, temp_script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
+        # Run detection in-process (avoids subprocess memory overhead)
+        output_video_path, output_log_path = run_vehicle_detection(
+            video_path=video_path,
+            outputs_dir=temp_folder,
+            progress_callback=progress_callback,
+            model_instance=yolo_model
         )
         
         saved_files = []
-        output_log = []
+        if output_video_path.exists():
+            saved_files.append({
+                'name': output_video_path.name,
+                'path': output_video_path.as_posix(),
+                'type': 'video'
+            })
+        if output_log_path.exists():
+            saved_files.append({
+                'name': output_log_path.name,
+                'path': output_log_path.as_posix(),
+                'type': 'csv'
+            })
+            
+        processing_status[job_id]['output_files'] = saved_files
         
-        # Read stdout line-by-line in real-time
-        while True:
-            line = process.stdout.readline()
-            if not line and process.poll() is not None:
-                break
-            if line:
-                output_log.append(line)
-                line_str = line.strip()
-                
-                # Print to server console for deployment logging/debugging
-                print(f"[Subprocess Output] {line_str}", flush=True)
-                
-                if line_str == "INIT_START":
-                    processing_status[job_id]['progress'] = 5
-                    processing_status[job_id]['message'] = "Initializing script and importing packages..."
-                elif line_str == "INIT_MODEL_LOADED":
-                    processing_status[job_id]['progress'] = 15
-                    processing_status[job_id]['message'] = "YOLOv8 model loaded successfully. Opening video..."
-                elif line_str == "INIT_VIDEO_OPENED":
-                    processing_status[job_id]['progress'] = 25
-                    processing_status[job_id]['message'] = "Video opened. Beginning vehicle detection..."
-                elif line_str.startswith("PROGRESS_UPDATE:"):
-                    # Format: PROGRESS_UPDATE:pct:frame:total
-                    parts = line_str.split(':')
-                    if len(parts) >= 4:
-                        try:
-                            pct = float(parts[1])
-                            frame_idx = int(parts[2])
-                            total_f = int(parts[3])
-                            # Map 0-100% of script to 25-95% of web app progress
-                            mapped_progress = int(25 + (pct * 0.7))
-                            processing_status[job_id]['progress'] = mapped_progress
-                            processing_status[job_id]['message'] = f"Processing video... {pct:.1f}% (Frame {frame_idx}/{total_f})"
-                        except ValueError:
-                            pass
-                elif 'Saved output video:' in line_str:
-                    file_path = line_str.split('Saved output video:')[1].strip()
-                    if Path(file_path).exists():
-                        saved_files.append({
-                            'name': Path(file_path).name,
-                            'path': file_path,
-                            'type': 'video'
-                        })
-                elif 'Saved detection log:' in line_str:
-                    file_path = line_str.split('Saved detection log:')[1].strip()
-                    if Path(file_path).exists():
-                        saved_files.append({
-                            'name': Path(file_path).name,
-                            'path': file_path,
-                            'type': 'csv'
-                        })
-
-        # Wait for the process to complete and close stdout stream
-        process.stdout.close()
-        process.wait()
-        
-        if process.returncode != 0:
-            error_details = "".join(output_log[-15:])  # Show last 15 lines of output log for error context
-            processing_status[job_id]['status'] = 'error'
-            processing_status[job_id]['message'] = f"Error (Exit code {process.returncode}):\n{error_details}"
+        # Create summary message
+        if saved_files:
+            file_list = '\n'.join([f"  • {f['name']} ({f['type'].upper()})" for f in saved_files])
+            processing_status[job_id]['message'] = f"✓ Processing completed!\n\nGenerated files:\n{file_list}"
         else:
-            processing_status[job_id]['output_files'] = saved_files
-            
-            # Create summary message
-            if saved_files:
-                file_list = '\n'.join([f"  • {f['name']} ({f['type'].upper()})" for f in saved_files])
-                processing_status[job_id]['message'] = f"✓ Processing completed!\n\nGenerated files:\n{file_list}"
-            else:
-                processing_status[job_id]['message'] = 'Processing completed! (Output files not found in output directory)'
-            
-            processing_status[job_id]['status'] = 'completed'
-            processing_status[job_id]['progress'] = 100
+            processing_status[job_id]['message'] = 'Processing completed! (Output files not found in output directory)'
         
-        # Clean up temp script
-        Path(temp_script).unlink(missing_ok=True)
+        processing_status[job_id]['status'] = 'completed'
+        processing_status[job_id]['progress'] = 100
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         processing_status[job_id]['status'] = 'error'
         processing_status[job_id]['message'] = f"Exception: {str(e)}"
 

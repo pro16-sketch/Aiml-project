@@ -173,307 +173,322 @@ def draw_dashboard(frame, fps: float, decision: str, counts: dict[str, int], nea
     cv2.addWeighted(center_overlay, 0.45, frame, 0.55, 0, frame)
     cv2.putText(frame, alert_text, (50, h - 68), cv2.FONT_HERSHEY_SIMPLEX, 1.05, decision_color, 3)
 
-# Load YOLO model (auto-downloads if not present)
-model = load_model_with_recovery("yolov8n.pt")
-print("INIT_MODEL_LOADED", flush=True)
+def run_vehicle_detection(
+    video_path: str = "road.mp4",
+    outputs_dir: str | Path = "outputs",
+    progress_callback = None,
+    model_instance = None
+):
+    print("INIT_START", flush=True)
+    # Load YOLO model (auto-downloads if not present)
+    if model_instance is None:
+        model_instance = load_model_with_recovery("yolov8n.pt")
+    print("INIT_MODEL_LOADED", flush=True)
 
-# Use webcam (0) OR replace with another path.
-cap = cv2.VideoCapture("road.mp4")
-if not cap.isOpened():
-    raise RuntimeError("Unable to open video source: road.mp4")
+    # Use webcam (0) OR replace with another path.
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Unable to open video source: {video_path}")
 
-frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-video_fps = cap.get(cv2.CAP_PROP_FPS)
-video_fps = video_fps if video_fps and video_fps > 1 else 30.0
-total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-total_frames = total_frames if total_frames > 0 else 1
-print("INIT_VIDEO_OPENED", flush=True)
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    video_fps = cap.get(cv2.CAP_PROP_FPS)
+    video_fps = video_fps if video_fps and video_fps > 1 else 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    total_frames = total_frames if total_frames > 0 else 1
+    print("INIT_VIDEO_OPENED", flush=True)
 
-outputs_dir = Path("outputs")
-outputs_dir.mkdir(exist_ok=True)
-stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-output_video_path = outputs_dir / f"vehicle_overlay_{stamp}.mp4"
-output_log_path = outputs_dir / f"detection_log_{stamp}.csv"
+    outputs_dir = Path(outputs_dir)
+    outputs_dir.mkdir(exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_video_path = outputs_dir / f"vehicle_overlay_{stamp}.mp4"
+    output_log_path = outputs_dir / f"detection_log_{stamp}.csv"
 
-fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-writer = cv2.VideoWriter(str(output_video_path), fourcc, video_fps, (frame_w, frame_h))
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(output_video_path), fourcc, video_fps, (frame_w, frame_h))
 
-filtered_classes = {"person", "car", "truck", "bus", "motorcycle", "bicycle"}
-too_close_threshold_m = 0.6
-alert_sound_file = Path("dragon-studio-censor-beep-1-372459 (1).mp3")
+    filtered_classes = {"person", "car", "truck", "bus", "motorcycle", "bicycle"}
+    too_close_threshold_m = 0.6
+    alert_sound_file = Path("dragon-studio-censor-beep-1-372459 (1).mp3")
 
-last_time = time.time()
-last_beep_at = 0.0
-frame_id = 0
-prev_gray = None
-prev_objects: list[dict] = []
-stationary_streak = 0
-hazard_streak = 0
+    last_time = time.time()
+    last_beep_at = 0.0
+    frame_id = 0
+    prev_gray = None
+    prev_objects: list[dict] = []
+    stationary_streak = 0
+    hazard_streak = 0
 
-with output_log_path.open("w", newline="", encoding="utf-8") as log_file:
-    logger = csv.writer(log_file)
-    logger.writerow([
-        "timestamp",
-        "frame_id",
-        "label",
-        "confidence",
-        "distance_m",
-        "risk",
-        "object_action",
-        "final_decision",
-    ])
+    with output_log_path.open("w", newline="", encoding="utf-8") as log_file:
+        logger = csv.writer(log_file)
+        logger.writerow([
+            "timestamp",
+            "frame_id",
+            "label",
+            "confidence",
+            "distance_m",
+            "risk",
+            "object_action",
+            "final_decision",
+        ])
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        frame_id += 1
-        now = time.time()
-        dt = max(now - last_time, 1e-6)
-        last_time = now
-        fps = 1.0 / dt
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        scene_motion = estimate_scene_motion(prev_gray, gray)
+            frame_id += 1
+            now = time.time()
+            dt = max(now - last_time, 1e-6)
+            last_time = now
+            fps = 1.0 / dt
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            scene_motion = estimate_scene_motion(prev_gray, gray)
 
-        results = model(frame, verbose=False)
-        annotated_frame = results[0].plot()
+            results = model_instance(frame, verbose=False)
+            annotated_frame = results[0].plot()
 
-        object_actions: list[str] = []
-        counts: dict[str, int] = {}
-        nearest_distance = 999.0
-        nearest_label = "none"
-        nearest_motion_px = 0.0
-        nearest_distance_delta = 0.0
-        rows_to_log = []
-        current_objects: list[dict] = []
-        used_prev_ids: set[int] = set()
-        any_imminent = False
-        any_closing_fast = False
-        moving_count = 0
+            object_actions: list[str] = []
+            counts: dict[str, int] = {}
+            nearest_distance = 999.0
+            nearest_label = "none"
+            nearest_motion_px = 0.0
+            nearest_distance_delta = 0.0
+            rows_to_log = []
+            current_objects: list[dict] = []
+            used_prev_ids: set[int] = set()
+            any_imminent = False
+            any_closing_fast = False
+            moving_count = 0
 
-        for box in results[0].boxes:
-            cls = int(box.cls[0])
-            label = model.names[cls]
-            if label not in filtered_classes:
-                continue
+            for box in results[0].boxes:
+                cls = int(box.cls[0])
+                label = model_instance.names[cls]
+                if label not in filtered_classes:
+                    continue
 
-            confidence = float(box.conf[0])
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
-            cx = (x1 + x2) * 0.5
-            cy = (y1 + y2) * 0.5
-            area = max((x2 - x1) * (y2 - y1), 1.0)
-            box_h = max(y2 - y1, 1.0)
-            distance_m = estimate_distance_meters(box_h, frame_w)
-            prev_match, motion_px = find_best_previous_match(label, cx, cy, prev_objects, used_prev_ids)
-            if prev_match:
-                used_prev_ids.add(prev_match["idx"])
+                confidence = float(box.conf[0])
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                cx = (x1 + x2) * 0.5
+                cy = (y1 + y2) * 0.5
+                area = max((x2 - x1) * (y2 - y1), 1.0)
+                box_h = max(y2 - y1, 1.0)
+                distance_m = estimate_distance_meters(box_h, frame_w)
+                prev_match, motion_px = find_best_previous_match(label, cx, cy, prev_objects, used_prev_ids)
+                if prev_match:
+                    used_prev_ids.add(prev_match["idx"])
 
-            area_growth = 0.0
-            distance_delta = 0.0
-            if prev_match:
-                area_growth = (area - prev_match["area"]) / max(prev_match["area"], 1.0)
-                distance_delta = prev_match["distance_m"] - distance_m
+                area_growth = 0.0
+                distance_delta = 0.0
+                if prev_match:
+                    area_growth = (area - prev_match["area"]) / max(prev_match["area"], 1.0)
+                    distance_delta = prev_match["distance_m"] - distance_m
 
-            is_moving_obj = motion_px > 6.0 or abs(area_growth) > 0.12 or distance_delta > 0.7
-            if is_moving_obj:
-                moving_count += 1
+                is_moving_obj = motion_px > 6.0 or abs(area_growth) > 0.12 or distance_delta > 0.7
+                if is_moving_obj:
+                    moving_count += 1
 
-            risk = risk_from_distance(distance_m)
-            action = action_from_label_and_risk(label, risk)
-            object_actions.append(action)
-            counts[label] = counts.get(label, 0) + 1
+                risk = risk_from_distance(distance_m)
+                action = action_from_label_and_risk(label, risk)
+                object_actions.append(action)
+                counts[label] = counts.get(label, 0) + 1
 
-            imminent = is_imminent_collision(x1, y1, x2, y2, frame_w, frame_h, label)
-            if imminent:
-                any_imminent = True
+                imminent = is_imminent_collision(x1, y1, x2, y2, frame_w, frame_h, label)
+                if imminent:
+                    any_imminent = True
 
-            if distance_delta > 0.9:
-                any_closing_fast = True
+                if distance_delta > 0.9:
+                    any_closing_fast = True
 
-            rows_to_log.append((label, confidence, distance_m, risk, action, motion_px, distance_delta, imminent))
-            current_objects.append({
-                "label": label,
-                "cx": cx,
-                "cy": cy,
-                "area": area,
-                "distance_m": distance_m,
-            })
+                rows_to_log.append((label, confidence, distance_m, risk, action, motion_px, distance_delta, imminent))
+                current_objects.append({
+                    "label": label,
+                    "cx": cx,
+                    "cy": cy,
+                    "area": area,
+                    "distance_m": distance_m,
+                })
 
-            if distance_m < nearest_distance:
-                nearest_distance = distance_m
-                nearest_label = label
-                nearest_motion_px = motion_px
-                nearest_distance_delta = distance_delta
+                if distance_m < nearest_distance:
+                    nearest_distance = distance_m
+                    nearest_label = label
+                    nearest_motion_px = motion_px
+                    nearest_distance_delta = distance_delta
 
-            if imminent:
-                nearest_distance = min(nearest_distance, 0.6)
-                nearest_label = label
+                if imminent:
+                    nearest_distance = min(nearest_distance, 0.6)
+                    nearest_label = label
 
-            risk_color = {
-                "high": (0, 0, 255),
-                "medium": (0, 200, 255),
-                "low": (0, 255, 0),
-            }[risk]
+                risk_color = {
+                    "high": (0, 0, 255),
+                    "medium": (0, 200, 255),
+                    "low": (0, 255, 0),
+                }[risk]
 
-            cv2.putText(
-                annotated_frame,
-                f"{label} {distance_m:.1f}m {risk}",
-                (int(x1), max(20, int(y1) - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.52,
-                risk_color,
-                2,
+                cv2.putText(
+                    annotated_frame,
+                    f"{label} {distance_m:.1f}m {risk}",
+                    (int(x1), max(20, int(y1) - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.52,
+                    risk_color,
+                    2,
+                )
+
+            # Priority-based global decision from all filtered objects.
+            final_decision = priority_decision(object_actions)
+
+            # Emergency override when objects are too close and motion indicates collision risk.
+            too_close = nearest_distance <= too_close_threshold_m
+            total_objects = max(sum(counts.values()), 1)
+            moving_ratio = moving_count / total_objects
+            scene_stationary = scene_motion < 0.014
+            mostly_stopped_objects = moving_ratio <= 0.30
+            stopped_traffic_now = (
+                too_close
+                and mostly_stopped_objects
+                and scene_stationary
+                and not any_closing_fast
             )
 
-        # Priority-based global decision from all filtered objects.
-        final_decision = priority_decision(object_actions)
+            # Debounce states across frames to avoid jitter flips near traffic lights.
+            if stopped_traffic_now:
+                stationary_streak += 1
+            else:
+                stationary_streak = 0
 
-        # Emergency override when objects are too close and motion indicates collision risk.
-        too_close = nearest_distance <= too_close_threshold_m
-        total_objects = max(sum(counts.values()), 1)
-        moving_ratio = moving_count / total_objects
-        scene_stationary = scene_motion < 0.014
-        mostly_stopped_objects = moving_ratio <= 0.30
-        stopped_traffic_now = (
-            too_close
-            and mostly_stopped_objects
-            and scene_stationary
-            and not any_closing_fast
-        )
+            hazard_now = too_close and (
+                any_closing_fast
+                or (any_imminent and not scene_stationary)
+                or moving_ratio > 0.45
+            )
+            if hazard_now:
+                hazard_streak += 1
+            else:
+                hazard_streak = max(0, hazard_streak - 1)
 
-        # Debounce states across frames to avoid jitter flips near traffic lights.
-        if stopped_traffic_now:
-            stationary_streak += 1
-        else:
-            stationary_streak = 0
-
-        hazard_now = too_close and (
-            any_closing_fast
-            or (any_imminent and not scene_stationary)
-            or moving_ratio > 0.45
-        )
-        if hazard_now:
-            hazard_streak += 1
-        else:
-            hazard_streak = max(0, hazard_streak - 1)
-
-        stopped_traffic = stationary_streak >= 8
-        confirmed_hazard = hazard_streak >= 2
-        has_vehicles = "car" in counts or "truck" in counts or "bus" in counts or "motorcycle" in counts
-        only_stationary_persons = (
-            "person" in counts
-            and not has_vehicles
-            and scene_stationary
-            and moving_count <= 1
-            and not any_closing_fast
-        )
-
-        if too_close and confirmed_hazard and not stopped_traffic:
-            final_decision = "STOP"
-            alert_text = "EMERGENCY STOP: OBJECT TOO CLOSE"
-        elif stopped_traffic:
-            final_decision = "SLOW"
-            alert_text = "TRAFFIC WAIT: VEHICLES STOPPED"
-        elif only_stationary_persons:
-            final_decision = "GO"
-            alert_text = "CLEAR: GO (pedestrian nearby)"
-        elif too_close and any_imminent and scene_stationary:
-            final_decision = "SLOW"
-            alert_text = "CAUTION: CLOSE QUEUE AHEAD"
-        elif final_decision == "STOP":
-            alert_text = "ALERT: STOP"
-        elif final_decision == "SLOW":
-            alert_text = "CAUTION: SLOW DOWN"
-        else:
-            alert_text = "CLEAR: GO"
-
-        # Motion gating for beep:
-        # 1) Dashcam context must be moving, 2) nearest object must be moving,
-        # 3) nearest object is either approaching OR passing close from behind/side.
-        dashcam_is_moving = not scene_stationary
-        nearest_object_is_moving = nearest_motion_px > 4.0
-        nearest_object_approaching = nearest_distance_delta > 0.35
-        nearest_object_passing_close = too_close and nearest_motion_px > 8.0
-
-        # If both scene and nearest object are stationary, explicitly suppress beep.
-        both_stationary = (
-            scene_stationary
-            and (not nearest_object_is_moving)
-            and mostly_stopped_objects
-        )
-
-        # Only beep on true confirmed emergencies with strict motion context.
-        # Beep if approaching OR if passing very close with high motion (from any direction).
-        if (
-            too_close
-            and confirmed_hazard
-            and not stopped_traffic
-            and not only_stationary_persons
-            and dashcam_is_moving
-            and nearest_object_is_moving
-            and (nearest_object_approaching or nearest_object_passing_close)
-            and not both_stationary
-        ):
-            last_beep_at = beep_for_decision("STOP", last_beep_at, now, alert_sound_file)
-
-        nearest_text = (
-            f"{nearest_label} @ {nearest_distance:.1f}m | M:{scene_motion:.3f} | mv:{moving_ratio:.2f}"
-            if nearest_label != "none"
-            else f"none | M:{scene_motion:.3f}"
-        )
-        draw_dashboard(annotated_frame, fps, final_decision, counts, nearest_text, alert_text)
-
-        for label, confidence, distance_m, risk, action, motion_px, distance_delta, imminent in rows_to_log:
-            logger.writerow([
-                datetime.now().isoformat(timespec="milliseconds"),
-                frame_id,
-                label,
-                f"{confidence:.3f}",
-                f"{distance_m:.2f}",
-                risk,
-                action,
-                final_decision,
-            ])
-
-            cv2.putText(
-                annotated_frame,
-                f"v:{motion_px:.1f}px dz:{distance_delta:.2f}m",
-                (20, frame_h - 12),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (180, 180, 180) if not imminent else (0, 0, 255),
-                1,
+            stopped_traffic = stationary_streak >= 8
+            confirmed_hazard = hazard_streak >= 2
+            has_vehicles = "car" in counts or "truck" in counts or "bus" in counts or "motorcycle" in counts
+            only_stationary_persons = (
+                "person" in counts
+                and not has_vehicles
+                and scene_stationary
+                and moving_count <= 1
+                and not any_closing_fast
             )
 
-        writer.write(annotated_frame)
-        
-        # Print progress for backend tracking
-        if frame_id == 1 or frame_id % 10 == 0 or frame_id == total_frames:
-            progress_pct = min(99.0, (frame_id / total_frames) * 100.0)
-            print(f"PROGRESS_UPDATE:{progress_pct:.1f}:{frame_id}:{total_frames}", flush=True)
-        if os.environ.get('DISPLAY') or os.name == 'nt':
-            try:
-                cv2.imshow("Vehicle Automation Dashboard", annotated_frame)
-                if cv2.waitKey(1) == 27:
-                    break
-            except Exception:
-                pass
+            if too_close and confirmed_hazard and not stopped_traffic:
+                final_decision = "STOP"
+                alert_text = "EMERGENCY STOP: OBJECT TOO CLOSE"
+            elif stopped_traffic:
+                final_decision = "SLOW"
+                alert_text = "TRAFFIC WAIT: VEHICLES STOPPED"
+            elif only_stationary_persons:
+                final_decision = "GO"
+                alert_text = "CLEAR: GO (pedestrian nearby)"
+            elif too_close and any_imminent and scene_stationary:
+                final_decision = "SLOW"
+                alert_text = "CAUTION: CLOSE QUEUE AHEAD"
+            elif final_decision == "STOP":
+                alert_text = "ALERT: STOP"
+            elif final_decision == "SLOW":
+                alert_text = "CAUTION: SLOW DOWN"
+            else:
+                alert_text = "CLEAR: GO"
 
-        prev_gray = gray
-        prev_objects = []
-        for i, obj in enumerate(current_objects):
-            obj["idx"] = i
-            prev_objects.append(obj)
+            # Motion gating for beep:
+            # 1) Dashcam context must be moving, 2) nearest object must be moving,
+            # 3) nearest object is either approaching OR passing close from behind/side.
+            dashcam_is_moving = not scene_stationary
+            nearest_object_is_moving = nearest_motion_px > 4.0
+            nearest_object_approaching = nearest_distance_delta > 0.35
+            nearest_object_passing_close = too_close and nearest_motion_px > 8.0
 
-cap.release()
-writer.release()
-if os.environ.get('DISPLAY') or os.name == 'nt':
-    try:
-        cv2.destroyAllWindows()
-    except Exception:
-        pass
+            # If both scene and nearest object are stationary, explicitly suppress beep.
+            both_stationary = (
+                scene_stationary
+                and (not nearest_object_is_moving)
+                and mostly_stopped_objects
+            )
 
-print(f"Saved output video: {output_video_path}")
-print(f"Saved detection log: {output_log_path}")
+            # Only beep on true confirmed emergencies with strict motion context.
+            # Beep if approaching OR if passing very close with high motion (from any direction).
+            if (
+                too_close
+                and confirmed_hazard
+                and not stopped_traffic
+                and not only_stationary_persons
+                and dashcam_is_moving
+                and nearest_object_is_moving
+                and (nearest_object_approaching or nearest_object_passing_close)
+                and not both_stationary
+            ):
+                last_beep_at = beep_for_decision("STOP", last_beep_at, now, alert_sound_file)
+
+            nearest_text = (
+                f"{nearest_label} @ {nearest_distance:.1f}m | M:{scene_motion:.3f} | mv:{moving_ratio:.2f}"
+                if nearest_label != "none"
+                else f"none | M:{scene_motion:.3f}"
+            )
+            draw_dashboard(annotated_frame, fps, final_decision, counts, nearest_text, alert_text)
+
+            for label, confidence, distance_m, risk, action, motion_px, distance_delta, imminent in rows_to_log:
+                logger.writerow([
+                    datetime.now().isoformat(timespec="milliseconds"),
+                    frame_id,
+                    label,
+                    f"{confidence:.3f}",
+                    f"{distance_m:.2f}",
+                    risk,
+                    action,
+                    final_decision,
+                ])
+
+                cv2.putText(
+                    annotated_frame,
+                    f"v:{motion_px:.1f}px dz:{distance_delta:.2f}m",
+                    (20, frame_h - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    (180, 180, 180) if not imminent else (0, 0, 255),
+                    1,
+                )
+
+            writer.write(annotated_frame)
+            
+            # Print progress for backend tracking and call progress_callback
+            if frame_id == 1 or frame_id % 10 == 0 or frame_id == total_frames:
+                progress_pct = min(99.0, (frame_id / total_frames) * 100.0)
+                print(f"PROGRESS_UPDATE:{progress_pct:.1f}:{frame_id}:{total_frames}", flush=True)
+                if progress_callback:
+                    progress_callback(progress_pct, frame_id, total_frames)
+            if os.environ.get('DISPLAY') or os.name == 'nt':
+                try:
+                    cv2.imshow("Vehicle Automation Dashboard", annotated_frame)
+                    if cv2.waitKey(1) == 27:
+                        break
+                except Exception:
+                    pass
+
+            prev_gray = gray
+            prev_objects = []
+            for i, obj in enumerate(current_objects):
+                obj["idx"] = i
+                prev_objects.append(obj)
+
+    cap.release()
+    writer.release()
+    if os.environ.get('DISPLAY') or os.name == 'nt':
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
+
+    print(f"Saved output video: {output_video_path}")
+    print(f"Saved detection log: {output_log_path}")
+    return output_video_path, output_log_path
+
+
+if __name__ == '__main__':
+    run_vehicle_detection()
